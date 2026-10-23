@@ -173,6 +173,7 @@ const UI = {
   cr_unis: L('Сильные вузы', 'Top universities'), cr_links: L('Дальше', 'Next steps'),
 
   // навигация внутренних страниц и хаб инструментов
+  jobs_link: L('Вакансии и резюме в Узбекистане →', 'Vacancies and CVs in Uzbekistan →'),
   nav_tools: L('Инструменты', 'Tools'), nav_unis: L('Вузы мира', 'World universities'),
   tools_title: L('Инструменты', 'Tools'),
   tools_lead: L('Всё, что помогает выбрать путь и поступить: от каталога вузов до плана подготовки.', 'Everything that helps you choose a path and get in: from the university catalogue to your study plan.'),

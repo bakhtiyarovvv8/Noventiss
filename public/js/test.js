@@ -315,7 +315,7 @@ function renderWork(s) {
     + (where.some(w => w !== 'uz') && lowEnglish(s) ? `<div class="alert">${t('eng_warn')}</div>` : '')
     + top
     + `<article class="card"><div class="cols">
-        <div><h4>${t('platforms')}</h4>${li(plats)}</div>
+        <div><h4>${t('platforms')}</h4>${li(plats)}<p class="note"><a href="/jobs?tab=vac&text=${encodeURIComponent(FIELDS[s.fields[0].id].jobs[0].n.ru)}" style="color:var(--gold)">${t('jobs_link')}</a></p></div>
         ${expTip ? `<div><h4>${T3('Совет по опыту', 'Experience tip', 'Tajriba boʻyicha maslahat')}</h4>${li([tx(expTip)])}</div>` : ''}
       </div><p class="note">${t('salary_note')}</p></article>`
     + otherFields(s.fields.slice(3, 9));

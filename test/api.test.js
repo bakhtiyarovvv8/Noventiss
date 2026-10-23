@@ -13,7 +13,7 @@ const servers = [];
 async function startServer(port, env = {}) {
   const dbFile = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'noventis-')), 'test.db');
   const proc = spawn(process.execPath, [path.join(__dirname, '..', 'server.js')], {
-    env: { ...process.env, PORT: String(port), TURSO_DATABASE_URL: 'file:' + dbFile.replace(/\\/g, '/'), PROXY_KEY: '', NODE_ENV: '', ...env },
+    env: { ...process.env, PORT: String(port), TURSO_DATABASE_URL: 'file:' + dbFile.replace(/\\/g, '/'), PROXY_KEY: '', NODE_ENV: '', HH_TOKEN: '', HH_CLIENT_ID: '', HH_CLIENT_SECRET: '', ...env },
     stdio: 'ignore',
   });
   servers.push(proc);
@@ -181,4 +181,38 @@ test('в продакшене кука входа с флагом Secure', async
   const r = await call(PROXIED, '/api/register', { method: 'POST', headers: via('203.0.113.15'), body: { name: 'Тест', email: uniq('s'), password: '12345678' } });
   assert.match(r.rawCookie, /HttpOnly/);
   assert.match(r.rawCookie, /Secure/);
+});
+
+test('вакансии без ключа hh: configured=false, без ошибки', async () => {
+  const r = await call(LOCAL, '/api/jobs?text=python');
+  assert.equal(r.status, 200);
+  assert.equal(r.data.configured, false);
+});
+
+test('резюме: видят все, контакт — только вошедшие, удалить можно только своё, не больше 3', async () => {
+  const a = await call(LOCAL, '/api/register', { method: 'POST', body: { name: 'Соискатель', email: uniq('ra'), password: '12345678' } });
+  const b = await call(LOCAL, '/api/register', { method: 'POST', body: { name: 'Работодатель', email: uniq('rb'), password: '12345678' } });
+  const cv = { title: 'Сварщик', sector: 'craft', city: 'samarkand', exp: 'y1', salary: '600', about: 'Аргон, полуавтомат', contact: '@svarshik' };
+  assert.equal((await call(LOCAL, '/api/resumes', { method: 'POST', body: cv })).status, 401);
+  assert.equal((await call(LOCAL, '/api/resumes', { method: 'POST', cookie: a.cookie, body: { ...cv, exp: 'zzz' } })).status, 400);
+  assert.equal((await call(LOCAL, '/api/resumes', { method: 'POST', cookie: a.cookie, body: { ...cv, city: '<b>' } })).status, 400);
+  const saved = await call(LOCAL, '/api/resumes', { method: 'POST', cookie: a.cookie, body: cv });
+  assert.equal(saved.status, 201);
+
+  const anon = (await call(LOCAL, '/api/resumes?city=samarkand&q=' + encodeURIComponent('аргон'))).data;
+  const mineAnon = anon.resumes.find(r => r.id === saved.data.id);
+  assert.ok(mineAnon, 'резюме видно без входа и находится поиском');
+  assert.equal(mineAnon.contact, null, 'контакт скрыт без входа');
+  assert.equal(mineAnon.salary, 600);
+  const seen = (await call(LOCAL, '/api/resumes?sector=craft', { cookie: b.cookie })).data.resumes.find(r => r.id === saved.data.id);
+  assert.equal(seen.contact, '@svarshik');
+  assert.equal((await call(LOCAL, '/api/resumes?q=%25%25', {})).status, 200, 'символы LIKE не ломают поиск');
+
+  await call(LOCAL, `/api/resumes/${saved.data.id}`, { method: 'DELETE', cookie: b.cookie });
+  assert.equal((await call(LOCAL, '/api/resumes/mine', { cookie: a.cookie })).data.resumes.length, 1, 'чужой не удалит');
+  await call(LOCAL, '/api/resumes', { method: 'POST', cookie: a.cookie, body: cv });
+  await call(LOCAL, '/api/resumes', { method: 'POST', cookie: a.cookie, body: cv });
+  assert.equal((await call(LOCAL, '/api/resumes', { method: 'POST', cookie: a.cookie, body: cv })).status, 400, 'четвёртое — лимит');
+  await call(LOCAL, `/api/resumes/${saved.data.id}`, { method: 'DELETE', cookie: a.cookie });
+  assert.equal((await call(LOCAL, '/api/resumes/mine', { cookie: a.cookie })).data.resumes.length, 2);
 });

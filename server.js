@@ -90,6 +90,21 @@ const ready = db.batch([
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   )`,
   'CREATE INDEX IF NOT EXISTS calcs_user ON calcs(user_id)',
+  // доска резюме «ищу работу»: видят все, контакт — только вошедшие
+  `CREATE TABLE IF NOT EXISTS resumes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    sector TEXT NOT NULL,
+    city TEXT NOT NULL,
+    exp TEXT NOT NULL,
+    salary INTEGER,
+    about TEXT NOT NULL DEFAULT '',
+    contact TEXT NOT NULL,
+    search TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`,
+  'CREATE INDEX IF NOT EXISTS resumes_user ON resumes(user_id)',
 ], 'write');
 
 const hashPassword = (password, salt) => new Promise((resolve, reject) =>
@@ -200,6 +215,61 @@ async function usdRate() {
   return rateCache.data;
 }
 
+// --- вакансии hh.uz. Без токена приложения hh поиск не отдаёт (403), поэтому:
+// HH_TOKEN — готовый токен приложения, или HH_CLIENT_ID + HH_CLIENT_SECRET — сервер получит его сам (dev.hh.ru)
+const HH_UA = 'Noventis/1.0 (noventis)';
+const UZ_AREAS = new Set(['97', '2759', '2778', '2781', '2768', '2779', '2782', '2780', '2783', '2790', '2786', '2788', '2789', '2870', '2784', '2787', '2785', '2766', '2767']);
+let hhToken = process.env.HH_TOKEN || '';
+const hhConfigured = () => !!(hhToken || (process.env.HH_CLIENT_ID && process.env.HH_CLIENT_SECRET));
+async function hhAuth() {
+  if (hhToken) return hhToken;
+  const r = await fetch('https://api.hh.ru/token', {
+    method: 'POST', signal: AbortSignal.timeout(8000),
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'HH-User-Agent': HH_UA },
+    body: new URLSearchParams({ grant_type: 'client_credentials', client_id: process.env.HH_CLIENT_ID, client_secret: process.env.HH_CLIENT_SECRET }),
+  });
+  const d = await r.json();
+  if (!d.access_token) throw new Error('hh token: ' + JSON.stringify(d).slice(0, 200));
+  return (hhToken = d.access_token);
+}
+const plain = s => String(s || '').replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+const jobsCache = new Map(); // ключ — строка запроса, кэш 10 минут, не больше 300 запросов
+async function hhVacancies(q) {
+  const key = JSON.stringify(q);
+  const hit = jobsCache.get(key);
+  if (hit && Date.now() - hit.t < 6e5) return hit.data;
+  const p = new URLSearchParams({ area: q.area, per_page: '20', page: String(q.page), order_by: 'publication_time' });
+  if (q.text) p.set('text', q.text);
+  if (q.salary) { p.set('salary', String(q.salary)); p.set('currency', 'USD'); p.set('only_with_salary', 'true'); }
+  const get = async () => fetch('https://api.hh.ru/vacancies?' + p, {
+    signal: AbortSignal.timeout(8000), headers: { 'HH-User-Agent': HH_UA, Authorization: 'Bearer ' + await hhAuth() } });
+  let r = await get();
+  if (r.status === 401 && !process.env.HH_TOKEN) { hhToken = ''; r = await get(); }
+  if (!r.ok) throw new Error('hh ' + r.status);
+  const d = await r.json();
+  const data = {
+    configured: true, found: d.found, page: d.page, pages: d.pages,
+    items: (d.items || []).map(v => ({
+      id: v.id, name: plain(v.name), employer: plain(v.employer && v.employer.name), city: plain(v.area && v.area.name),
+      salary: v.salary ? { from: v.salary.from, to: v.salary.to, currency: v.salary.currency } : null,
+      url: /^https:\/\/[\w.-]*hh\.(uz|ru)\//.test(v.alternate_url) ? v.alternate_url : '',
+      date: String(v.published_at || '').slice(0, 10),
+      req: plain(v.snippet && v.snippet.requirement).slice(0, 300),
+      schedule: plain(v.schedule && v.schedule.name), exp: plain(v.experience && v.experience.name),
+    })),
+  };
+  if (jobsCache.size > 300) jobsCache.clear();
+  jobsCache.set(key, { t: Date.now(), data });
+  return data;
+}
+
+const RESUME_EXP = ['none', 'lt1', 'y1', 'y3'];
+const resumeRow = (r, withContact) => ({
+  id: Number(r.id), title: r.title, sector: r.sector, city: r.city, exp: r.exp,
+  salary: r.salary == null ? null : Number(r.salary), about: r.about, name: r.name,
+  contact: withContact ? r.contact : null, created_at: r.created_at,
+});
+
 async function api(req, res, url) {
   // Если сервер стоит за Cloudflare, напрямую на Render к API не пускаем.
   if (PROXY_KEY && !viaCloudflare(req)) return json(res, 403, { error: 'forbidden' });
@@ -212,6 +282,35 @@ async function api(req, res, url) {
 
   // курс доллара ЦБ Узбекистана для калькулятора стоимости, кэш 6 часов
   if (route === 'GET /api/rate') return json(res, 200, await usdRate());
+
+  // вакансии Узбекистана с hh.uz: text, area (код города hh), salary ($ в месяц), page
+  if (route === 'GET /api/jobs') {
+    if (!hhConfigured()) return json(res, 200, { configured: false, items: [] });
+    const sp = url.searchParams;
+    const q = {
+      text: str(sp.get('text')).trim().slice(0, 100),
+      area: UZ_AREAS.has(sp.get('area')) ? sp.get('area') : '97',
+      salary: Math.min(100000, Math.max(0, Math.floor(Number(sp.get('salary')) || 0))),
+      page: Math.min(19, Math.max(0, Math.floor(Number(sp.get('page')) || 0))),
+    };
+    try { return json(res, 200, await hhVacancies(q)); }
+    catch (e) { console.error('Вакансии hh:', e.message); return json(res, 502, { error: 'jobs_unavailable' }); }
+  }
+
+  // доска резюме: смотреть может любой, контакт видят только вошедшие
+  if (route === 'GET /api/resumes') {
+    const viewer = await currentUser(req);
+    const sp = url.searchParams, where = [], args = [];
+    const sector = str(sp.get('sector')).slice(0, 30), city = str(sp.get('city')).slice(0, 30), q = str(sp.get('q')).trim().slice(0, 60);
+    if (sector) { where.push('r.sector = ?'); args.push(sector); }
+    if (city) { where.push('r.city = ?'); args.push(city); }
+    // LIKE в SQLite не знает регистр кириллицы, поэтому ищем по полю search, сохранённому в нижнем регистре
+    if (q) { where.push("r.search LIKE ? ESCAPE '\\'"); args.push('%' + q.toLowerCase().replace(/[\\%_]/g, '\\$&') + '%'); }
+    const page = Math.min(50, Math.max(0, Math.floor(Number(sp.get('page')) || 0)));
+    const rows = await all(`SELECT r.*, u.name FROM resumes r JOIN users u ON u.id = r.user_id
+      ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY r.id DESC LIMIT 21 OFFSET ?`, ...args, page * 20);
+    return json(res, 200, { resumes: rows.slice(0, 20).map(r => resumeRow(r, !!viewer)), more: rows.length > 20, login: !viewer });
+  }
 
   if (route === 'POST /api/register') {
     const body = await readBody(req);
@@ -313,6 +412,30 @@ async function api(req, res, url) {
   const cc = url.pathname.match(/^\/api\/calcs\/(\d{1,12})$/);
   if (cc && req.method === 'DELETE') {
     await run('DELETE FROM calcs WHERE id = ? AND user_id = ?', Number(cc[1]), user.id);
+    return json(res, 200, { ok: true });
+  }
+
+  // ---------- резюме ----------
+  if (route === 'GET /api/resumes/mine') {
+    const rows = await all('SELECT r.*, u.name FROM resumes r JOIN users u ON u.id = r.user_id WHERE r.user_id = ? ORDER BY r.id DESC', user.id);
+    return json(res, 200, { resumes: rows.map(r => resumeRow(r, true)) });
+  }
+  if (route === 'POST /api/resumes') {
+    const b = await readBody(req);
+    const title = str(b.title).trim().slice(0, 100), sector = str(b.sector).trim(), city = str(b.city).trim();
+    const contact = str(b.contact).trim().slice(0, 100), about = str(b.about).trim().slice(0, 1000);
+    const salary = b.salary === '' || b.salary == null ? null : Math.floor(Number(b.salary));
+    if (title.length < 2 || !/^[a-z]{2,20}$/.test(sector) || !/^[a-z]{2,20}$/.test(city) || !RESUME_EXP.includes(b.exp)
+        || contact.length < 3 || (salary !== null && !(salary >= 0 && salary <= 100000))) return json(res, 400, { error: 'bad_json' });
+    const n = await one('SELECT COUNT(*) AS c FROM resumes WHERE user_id = ?', user.id);
+    if (Number(n.c) >= 3) return json(res, 400, { error: 'too_many' });
+    const r = await run('INSERT INTO resumes (user_id, title, sector, city, exp, salary, about, contact, search) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      user.id, title, sector, city, b.exp, salary, about, contact, (title + ' ' + about).toLowerCase());
+    return json(res, 201, { id: Number(r.lastInsertRowid) });
+  }
+  const rm = url.pathname.match(/^\/api\/resumes\/(\d{1,12})$/);
+  if (rm && req.method === 'DELETE') {
+    await run('DELETE FROM resumes WHERE id = ? AND user_id = ?', Number(rm[1]), user.id);
     return json(res, 200, { ok: true });
   }
 

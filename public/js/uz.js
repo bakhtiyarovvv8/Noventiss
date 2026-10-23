@@ -1,5 +1,8 @@
 // Узбекский перевод (латиница): русская строка или название вуза → узбекская. Проверка полноты: node scripts/check-uz.js
-const UZ = {"Тест «Университет»":"«Universitet» testi",
+const UZ = {"Работа в Узбекистане":"Oʻzbekistonda ish",
+"Вакансии hh.uz, доска резюме и 330+ профессий с зарплатами":"hh.uz vakansiyalari, rezyume taxtasi va maoshlari bilan 330+ kasb",
+"Вакансии и резюме в Узбекистане →":"Oʻzbekistondagi vakansiyalar va rezyumelar →",
+"Тест «Университет»":"«Universitet» testi",
 "Направление и вузы по твоим способностям":"Qobiliyatingizga mos yoʻnalish va oliygohlar",
 "Тест «Работа»":"«Ish» testi",
 "Профессии и зарплаты под твои навыки":"Koʻnikmalaringizga mos kasblar va maoshlar",
